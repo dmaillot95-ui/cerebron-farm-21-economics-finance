@@ -1,44 +1,53 @@
-import json, os, sys
+import json, os, subprocess, hashlib
 from datetime import datetime, timezone
 
-role = os.environ.get('ROLE','UNKNOWN_ROLE')
-model = os.environ.get('MODEL','huggingface-projects/llama-3.2-3B-Instruct')
-mission = os.environ.get('MISSION','Analyze the economics/finance question rigorously.')
-
-prompt = f'''You are {role} in CEREBRON OMEGA Farm 21 Economics Finance.
-Mission: {mission}
-Rules: REALITY > COHERENCE; CLAIM <= EVIDENCE; FORECAST != FACT; MODEL != REALITY; CORRELATION != CAUSATION; UNKNOWN REMAINS UNKNOWN.
-Make assumptions explicit. Distinguish ESTABLISHED / SUPPORTED / PLAUSIBLE / SPECULATIVE / CONFLICTED / UNKNOWN. Report uncertainty, time period, geography, units, data vintage and sensitivity when relevant.
-Return a concise technical analysis with claims, assumptions, counterarguments, verification needs, and residual unknowns.'''
-
-result = {
-  'role': role,
-  'model': model,
-  'status': 'UNREVIEWED_EXTERNAL_AGENT_OUTPUT',
-  'timestamp_utc': datetime.now(timezone.utc).isoformat(),
-  'prompt': prompt,
-  'output': None,
-  'error': None
-}
-
-try:
-    from gradio_client import Client
-    client = Client(model)
+PREFERRED=['/generate','/chat','/predict','/respond','/infer','/run']
+def run(cmd,timeout=240): return subprocess.run(cmd,capture_output=True,text=True,timeout=timeout)
+def payload_for(spec,prompt):
+    payload={}; prompt_set=False
+    for p in spec.get('parameters',[]):
+        name=p.get('name',''); lname=name.lower(); required=bool(p.get('required',False)); default=p.get('default'); typ=(p.get('type') or {}).get('type')
+        if lname in {'message','prompt','text','query','input','instruction','user_message'}: payload[name]=prompt; prompt_set=True
+        elif lname in {'chat_history','history','messages'}: payload[name]=[]
+        elif lname in {'max_new_tokens','max_tokens','maximum_new_tokens'}: payload[name]=700
+        elif lname=='temperature': payload[name]=0.1
+        elif lname=='top_p': payload[name]=0.9
+        elif lname=='top_k': payload[name]=40
+        elif required and default is None:
+            if typ=='string' and not prompt_set: payload[name]=prompt; prompt_set=True
+            else: return None
+    return payload if prompt_set else None
+def extract(raw):
+    raw=raw.strip()
     try:
-        out = client.predict(message=prompt, api_name='/chat')
-    except Exception:
-        try:
-            out = client.predict(prompt, api_name='/chat')
-        except Exception:
-            out = client.predict(prompt)
-    result['output'] = out
-except Exception as e:
-    result['error'] = repr(e)
+        obj=json.loads(raw)
+        if isinstance(obj,dict):
+            for k in ('Response','response','text','output','message'):
+                if isinstance(obj.get(k),str): return obj[k].strip()
+    except Exception: pass
+    return raw
+def invoke(space,prompt):
+    info=run(['hf-gradio','info',space],120)
+    if info.returncode!=0: return False,'',{'stage':'info','error':(info.stderr or info.stdout)[-1200:]}
+    try: api=json.loads(info.stdout)
+    except Exception as e: return False,'',{'stage':'decode','error':repr(e)}
+    endpoints=list(api.items()); endpoints.sort(key=lambda kv:(PREFERRED.index(kv[0]) if kv[0] in PREFERRED else 99,kv[0]))
+    errors=[]
+    for endpoint,spec in endpoints:
+        p=payload_for(spec,prompt)
+        if p is None: continue
+        pred=run(['hf-gradio','predict',space,endpoint,json.dumps(p,ensure_ascii=False)],240)
+        if pred.returncode==0 and (pred.stdout or '').strip():
+            text=extract(pred.stdout)
+            if text: return True,text,{'endpoint':endpoint,'sha256':hashlib.sha256(text.encode()).hexdigest()}
+        errors.append((pred.stderr or pred.stdout)[-700:])
+    return False,'',{'stage':'predict','error':' | '.join(errors[-3:]) or 'No compatible endpoint'}
 
-os.makedirs('results', exist_ok=True)
-path = f"results/{role}.json"
-with open(path,'w',encoding='utf-8') as f:
-    json.dump(result,f,ensure_ascii=False,indent=2,default=str)
-print(path)
-if result['error']:
-    sys.exit(1)
+role=os.environ.get('ROLE','UNKNOWN_ROLE'); model=os.environ.get('MODEL','huggingface-projects/llama-3.2-3B-Instruct'); mission=os.environ.get('MISSION','Analyze the economics/finance question rigorously.')
+prompt=f'''You are {role} in CEREBRON OMEGA Farm 21 Economics Finance.\nMission: {mission}\nRules: REALITY > COHERENCE; CLAIM <= EVIDENCE; FORECAST != FACT; MODEL != REALITY; CORRELATION != CAUSATION; UNKNOWN REMAINS UNKNOWN. Make assumptions explicit. Distinguish ESTABLISHED / SUPPORTED / PLAUSIBLE / SPECULATIVE / CONFLICTED / UNKNOWN. Report uncertainty, time period, geography, units, data vintage and sensitivity when relevant. Return a concise technical analysis with claims, assumptions, counterarguments, verification needs, and residual unknowns.'''
+ok,text,meta=invoke(model,prompt)
+result={'role':role,'model':model,'status':'UNREVIEWED_EXTERNAL_AGENT_OUTPUT' if ok else 'EXTERNAL_INFERENCE_FAILED','inference_success':bool(ok),'timestamp_utc':datetime.now(timezone.utc).isoformat(),'output':text if ok else None,'error':None if ok else meta.get('error'),'meta':meta}
+os.makedirs('results',exist_ok=True)
+path=f'results/{role}.json'
+with open(path,'w',encoding='utf-8') as f: json.dump(result,f,ensure_ascii=False,indent=2)
+print(json.dumps({'role':role,'inference_success':bool(ok)}))
