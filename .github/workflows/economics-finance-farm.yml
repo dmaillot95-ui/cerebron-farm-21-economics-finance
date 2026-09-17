@@ -1,0 +1,90 @@
+name: CEREBRON Farm 21 Economics Finance
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  roles:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      max-parallel: 20
+      matrix:
+        include:
+          - {role: MACROECONOMICS_SPECIALIST, model: huggingface-projects/llama-3.2-3B-Instruct}
+          - {role: MICROECONOMICS_SPECIALIST, model: huggingface-projects/gemma-2-9b-it}
+          - {role: ECONOMETRICS_SPECIALIST, model: huggingface-projects/llama-3.2-3B-Instruct}
+          - {role: LABOR_ECONOMICS_SPECIALIST, model: huggingface-projects/gemma-2-9b-it}
+          - {role: INDUSTRIAL_ORGANIZATION_SPECIALIST, model: huggingface-projects/llama-3.2-3B-Instruct}
+          - {role: INTERNATIONAL_TRADE_SPECIALIST, model: huggingface-projects/gemma-2-9b-it}
+          - {role: MONETARY_POLICY_SPECIALIST, model: huggingface-projects/llama-3.2-3B-Instruct}
+          - {role: PUBLIC_FINANCE_SPECIALIST, model: huggingface-projects/gemma-2-9b-it}
+          - {role: CORPORATE_FINANCE_SPECIALIST, model: huggingface-projects/llama-3.2-3B-Instruct}
+          - {role: ACCOUNTING_CASHFLOW_AUDITOR, model: huggingface-projects/gemma-2-9b-it}
+          - {role: CAPITAL_MARKETS_SPECIALIST, model: huggingface-projects/llama-3.2-3B-Instruct}
+          - {role: CREDIT_RISK_SPECIALIST, model: huggingface-projects/gemma-2-9b-it}
+          - {role: MARKET_RISK_SPECIALIST, model: huggingface-projects/llama-3.2-3B-Instruct}
+          - {role: PORTFOLIO_ANALYSIS_SPECIALIST, model: huggingface-projects/gemma-2-9b-it}
+          - {role: VALUATION_SPECIALIST, model: huggingface-projects/llama-3.2-3B-Instruct}
+          - {role: SCENARIO_STRESS_TESTER, model: huggingface-projects/gemma-2-9b-it}
+          - {role: FORECAST_VALIDITY_AUDITOR, model: huggingface-projects/llama-3.2-3B-Instruct}
+          - {role: RED_TEAM_ECON_FINANCE, model: huggingface-projects/gemma-2-9b-it}
+          - {role: INDEPENDENT_REPLICATOR, model: huggingface-projects/llama-3.2-3B-Instruct}
+          - {role: OMEGA_ECON_FINANCE_JUDGE, model: huggingface-projects/gemma-2-9b-it}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install -q gradio_client
+      - name: Run role
+        env:
+          ROLE: ${{ matrix.role }}
+          MODEL: ${{ matrix.model }}
+          MISSION: Analyze the current economics/finance mission using the role specialization and identify claims, assumptions, uncertainty, contradictions, validation steps, and residual unknowns.
+        run: python worker/farm_worker.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: role-${{ matrix.role }}
+          path: results/${{ matrix.role }}.json
+          if-no-files-found: warn
+
+  omega-fusion:
+    needs: roles
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: role-*
+          path: omega-input
+          merge-multiple: true
+      - name: Build Omega packet
+        shell: bash
+        run: |
+          mkdir -p omega
+          python - <<'PY'
+          import glob, json, os
+          files=sorted(glob.glob('omega-input/*.json'))
+          rows=[]
+          for p in files:
+              try:
+                  rows.append(json.load(open(p,encoding='utf-8')))
+              except Exception as e:
+                  rows.append({'file':p,'error':repr(e)})
+          packet={
+            'farm':'21-economics-finance',
+            'status':'UNREVIEWED_EXTERNAL_AGENT_OUTPUT',
+            'role_results_count':len(rows),
+            'results':rows,
+            'rules':['REALITY > COHERENCE','CLAIM <= EVIDENCE','FORECAST != FACT','MODEL != REALITY','UNKNOWN REMAINS UNKNOWN']
+          }
+          json.dump(packet,open('omega/farm21-omega.json','w',encoding='utf-8'),ensure_ascii=False,indent=2)
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: economics-finance-farm-21-omega-packet
+          path: omega/farm21-omega.json
