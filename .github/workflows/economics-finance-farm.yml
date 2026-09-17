@@ -38,7 +38,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - run: pip install -q gradio_client
+      - run: pip install -q hf-gradio
       - name: Run role
         env:
           ROLE: ${{ matrix.role }}
@@ -67,18 +67,18 @@ jobs:
         run: |
           mkdir -p omega
           python - <<'PY'
-          import glob, json, os
-          files=sorted(glob.glob('omega-input/*.json'))
+          import glob, json
           rows=[]
-          for p in files:
-              try:
-                  rows.append(json.load(open(p,encoding='utf-8')))
-              except Exception as e:
-                  rows.append({'file':p,'error':repr(e)})
+          for p in sorted(glob.glob('omega-input/*.json')):
+              try: rows.append(json.load(open(p,encoding='utf-8')))
+              except Exception as e: rows.append({'file':p,'error':repr(e)})
           packet={
             'farm':'21-economics-finance',
             'status':'UNREVIEWED_EXTERNAL_AGENT_OUTPUT',
             'role_results_count':len(rows),
+            'successful_external_ai_calls':sum(bool(x.get('inference_success')) for x in rows),
+            'failed_external_ai_calls':sum(not bool(x.get('inference_success')) for x in rows),
+            'model_families':sorted(set(x.get('model','') for x in rows if x.get('model'))),
             'results':rows,
             'rules':['REALITY > COHERENCE','CLAIM <= EVIDENCE','FORECAST != FACT','MODEL != REALITY','UNKNOWN REMAINS UNKNOWN']
           }
